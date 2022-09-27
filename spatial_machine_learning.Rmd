@@ -1,0 +1,229 @@
+---
+title: "Spatial Machine Learning"
+author: "Justin Williams"
+date: "2022-09-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages}
+library(dotenv)
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(patchwork)
+library(units)
+library(leaflet)
+library(mapview)
+library(tigris)
+options(tigris_use_cache = TRUE)
+```
+
+## Load data
+
+Load in census data for NYC main racial demographics with **tidycensus** package.
+```{r set-variables}
+nyc_counties <- c("Bronx","Kings","New York","Queens","Richmond")
+```
+
+Racial data.
+
+```{r load-racial-data}
+get_acs(
+  geography = "tract",
+  variables = c(
+    white = "B03002_003",
+    black = "B03002_004",
+    asian = "B03002_006",
+    hispanic = "B03002_012"
+  ), 
+  state = "NY",
+  county = nyc_counties,
+  geometry = TRUE,
+  year = 2019,
+  key = Sys.getenv("CENSUS_API"))
+```
+
+### Median home variables for linear regression data
+
+Search for variables
+
+```{r load-variables}
+v20 <- load_variables(2020, "acs5/profile", cache = TRUE)
+
+View(v20)
+```
+
+
+ACS estimates acquired are:
+  - `median_valueE`: The median home value of the Census tract (our outcome variable);
+
+  - `median_roomsE`: The median number of rooms for homes in the Census tract;
+
+  - `total_populationE`: The total population;
+
+  - `median_ageE`: The median age of the population in the Census tract;
+
+  - `median_year_builtE`: The median year built of housing structures in the tract;
+
+  - `median_incomeE`: The median income of households in the Census tract;
+
+  - `pct_collegeE`: The percentage of the population age 25 and up with a four-year college degree;
+
+  - `pct_foreign_bornE`: The percentage of the population born outside the United States;
+
+  - `pct_whiteE`: The percentage of the population that identifies as non-Hispanic white;
+  
+  - `pct_blackE`: The percentage of the population that identifies as non-Hispanic black;
+  
+  - `pct_hispanicE`: The percentage of the population that identifies as Hispanic, any race;
+  
+  - `pct_asianE`: The percentage of the population that identifies as Asian one race.
+
+  - `percent_oohE`: The percentage of housing units in the tract that are owner-occupied.
+
+```{r load-median-home-data}
+# variable list
+variables <- c(
+  median_value = "B25077_001",
+  median_rooms = "B25018_001",
+  median_income = "DP03_0062",
+  total_population = "B01003_001",
+  median_age = "B01002_001",
+  pct_college = "DP02_0068P",
+  pct_foreign_born = "DP02_0094P",
+  pct_white = "DP05_0077P",
+  pct_black = "DP05_0078P",
+  pct_hispanic = "DP05_0070P",
+  pct_asian = "DP05_0044P",
+  median_year_built = "B25037_001",
+  percent_ooh = "DP04_0046P"
+)
+
+# get acs data
+nyc_census_data <- get_acs(
+  geography = "tract",
+  variables = variables,
+  state = "NY",
+  county = nyc_counties,
+  geometry = TRUE,
+  output = "wide",
+  year = 2020,
+  key = Sys.getenv("CENSUS_API")) %>% 
+  st_transform(2263)
+```
+
+View target variable
+
+```{r target-variable}
+(ggplot_med_income <- 
+  ggplot(nyc_census_data, aes(fill = median_valueE)) +
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(labels = scales::label_dollar()) + 
+  theme_void() + 
+  labs(title = "NYC Median Home Value",
+       subtitle = "(2016-2020 ACS Estimate)",
+       fill = "Median home value ")) +
+  theme(plot.title.position = 'plot',
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+# # save plot
+# ggsave("./images/ggplot_med_inc.png", 
+#        plot = ggplot_med_income,
+#        bg = "white")
+```
+
+Try this with mapview
+
+```{r mapview-version}
+(mapview_nyc_med_home <- nyc_census_data %>% 
+  mapview(
+    zcol = "median_valueE",
+    legend = T,
+    layer.name = "NYC Median Home Value",
+    alpha = 0.9,
+    lwd=0.125,
+    color = "white",
+    na.alpha = 0.0))
+
+# # save as png
+# mapshot(mapview_nyc_med_home,
+#         file = "./images/mapview_nyc_med_home.png")
+```
+
+Missing target values
+
+```{r missing-target-value}
+count(nyc_census_data[nyc_census_data$median_valueE == "NA",])$n
+```
+
+Histogram of `median_valueE` distribution.
+
+```{r histogram}
+(nyc_hist <- 
+  nyc_census_data %>% 
+  ggplot(aes(x = median_valueE)) + 
+  geom_histogram(alpha = 0.5, fill = "navy", color = "navy",
+                 bins = 100) + 
+  theme_minimal() + 
+  scale_x_continuous(labels = scales::label_dollar()) + 
+  labs(x = "Median home value"))
+```
+
+Right skewed with a clustering of Census Tracts in the lower distribution and a long left tail in the expensive areas. This could lead to a violation of the normality principle let's transforming. 
+
+### Transformation
+
+  - try some type of transformation, sqrt?
+
+```{r transform}
+ggplot_med_home_sqrt <- nyc_census_data %>% 
+  ggplot(aes(fill = sqrt(median_valueE))) + 
+    geom_sf(color = NA) + 
+    scale_fill_viridis_c() + 
+    theme_void() + 
+    labs(title = "NYC Median Home Income",
+       subtitle = "(2016-2020 ACS Estimate)",
+       fill = "Median home\nvalue (sqrt) ") +
+    theme(plot.title.position = 'plot',
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+nyc_hist_sqrt <- nyc_census_data %>% 
+  ggplot(aes(x = sqrt(median_valueE))) + 
+  geom_histogram(alpha = 0.5, fill = "navy", color = "navy",
+                 bins = 100) + 
+  theme_minimal() + 
+  scale_x_continuous() + 
+  labs(x = "Median home value (sqrt)")
+
+ggplot_med_home_sqrt + nyc_hist_sqrt
+```
+
+### Select only estimates, omit NA
+
+
+```{r selectE-omit-NA}
+(nyc_census_data_prepped <- nyc_census_data %>% 
+  mutate(pop_density = as.numeric(set_units(total_populationE / st_area(.), "1/km2")),
+         median_structure_age = 2020 - median_year_builtE) %>% 
+  select(!ends_with("M")) %>% 
+  rename_with(.fn = ~str_remove(.x, "E$")) %>%
+  na.omit())
+```
+
+## Modeling
+
+```{r first-model}
+formula <- "sqrt(median_value) ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + total_population + median_structure_age + pop_density"
+
+model1 <- lm(formula = formula, data = nyc_census_data_prepped)
+
+summary(model1)
+
+```
+
