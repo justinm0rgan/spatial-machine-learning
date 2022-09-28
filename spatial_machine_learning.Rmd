@@ -15,7 +15,11 @@ library(tidyverse)
 library(sf)
 library(tidycensus)
 library(patchwork)
+library(spdep)
+library(car)
 library(units)
+library(corrr)
+library(spatialreg)
 library(leaflet)
 library(mapview)
 library(tigris)
@@ -54,7 +58,7 @@ Search for variables
 ```{r load-variables}
 v20 <- load_variables(2020, "acs5/profile", cache = TRUE)
 
-View(v20)
+# View(v20)
 ```
 
 
@@ -75,13 +79,13 @@ ACS estimates acquired are:
 
   - `pct_foreign_bornE`: The percentage of the population born outside the United States;
 
-  - `pct_whiteE`: The percentage of the population that identifies as non-Hispanic white;
+  - `pct_whiteE`: The percentage of the population that identifies as non-Hispanic white alone;
   
-  - `pct_blackE`: The percentage of the population that identifies as non-Hispanic black;
+  - `pct_blackE`: The percentage of the population that identifies as non-Hispanic black alone;
   
   - `pct_hispanicE`: The percentage of the population that identifies as Hispanic, any race;
   
-  - `pct_asianE`: The percentage of the population that identifies as Asian one race.
+  - `pct_asianE`: The percentage of the population that identifies as Asian non-hispanic Asian alone.
 
   - `percent_oohE`: The percentage of housing units in the tract that are owner-occupied.
 
@@ -98,7 +102,7 @@ variables <- c(
   pct_white = "DP05_0077P",
   pct_black = "DP05_0078P",
   pct_hispanic = "DP05_0070P",
-  pct_asian = "DP05_0044P",
+  pct_asian = "DP05_0080P",
   median_year_built = "B25037_001",
   percent_ooh = "DP04_0046P"
 )
@@ -219,11 +223,147 @@ ggplot_med_home_sqrt + nyc_hist_sqrt
 ## Modeling
 
 ```{r first-model}
-formula <- "sqrt(median_value) ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + total_population + median_structure_age + pop_density"
+formula <- "sqrt(median_value) ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
 
 model1 <- lm(formula = formula, data = nyc_census_data_prepped)
 
 summary(model1)
 
+```
+
+## Correlation
+
+Let's look at the correlated values
+
+```{r correlation}
+# prep for correlation
+nyc_estimates <- nyc_census_data_prepped %>%
+  select(-GEOID, -median_value, -median_year_built, -total_population) %>%
+  st_drop_geometry()
+
+# get correlations
+correlations <- correlate(nyc_estimates, method = "pearson")
+
+# plot correlcations
+network_plot(correlations,
+             min_cor = .4)
+```
+
+Variance Inflation Factor (VIF) calcs. Value of >5 suggest a level of correlation that can be problematic
+
+```{r vif}
+vif(model1)
+```
+## Residuals
+
+Normality assumption of residuals.
+
+```{r residuals}
+# get model residuals
+nyc_census_data_prepped$residuals <- residuals(model1)
+
+# plot residuals hist
+nyc_census_data_prepped %>% 
+ggplot(aes(x = residuals)) + 
+  geom_histogram(bins = 100, alpha = 0.5, color = "navy",
+                 fill = "navy") + 
+  theme_minimal()
+```
+
+Assumption of residual independence commonly violated in models using spatial data due to *spatial autocorrelation* in the error term. Which means model performence depends on geographic location. This can be assessed using Moran's I.
+
+```{r moran-test}
+wts <- nyc_census_data_prepped %>%
+  poly2nb(snap=1e+4) %>%
+  nb2listw(zero.policy=TRUE)
+
+moran.test(nyc_census_data_prepped$residuals, wts)
+```
+Graph Moran's I
+
+```{r}
+nyc_census_data_prepped$lagged_residuals <- lag.listw(wts, nyc_census_data_prepped$residuals)
+
+nyc_census_data_prepped %>% 
+ggplot(aes(x = residuals, y = lagged_residuals)) + 
+  theme_minimal() + 
+  geom_point(alpha = 0.5) + 
+  geom_smooth(method = "lm", color = "red")
+```
+
+Shows positive spatial autocorrelation in residuals suggesting assumption of independence in error term is violated.
+
+## Spatial regression methods
+
+### Spatial lag
+
+```{r spatial-lag-model}
+# lag model
+lag_model <- lagsarlm(
+  formula = formula, 
+  data = nyc_census_data_prepped, 
+  listw = wts
+)
+
+# model summary
+summary(lag_model, Nagelkerke = TRUE)
+
+```
+
+R-squared is higher, and estimates are higher which illustrates the importance of controlling for spatial lag.
+
+### Spatial regression
+
+```{r spatial-reg}
+# create model
+error_model <- errorsarlm(
+  formula = formula, 
+  data = nyc_census_data_prepped, 
+  listw = wts
+)
+
+# model summary
+summary(error_model, Nagelkerke = TRUE)
+```
+Recompute Moran's I
+
+```{r lag-moran}
+moran.test(lag_model$residuals, wts)
+```
+
+```{r regression-moran}
+moran.test(error_model$residuals, wts)
+```
+
+## From Github issue
+
+```{r}
+nb <- poly2nb(nyc_census_data_prepped)
+nb
+nb2listw(neighbours = nb,  zero.policy = TRUE)
+# Error in print.listw(x) : 
+#  regions with no neighbours found, use zero.policy=TRUE
+print(nb2listw(neighbours = nb,  zero.policy = TRUE),  zero.policy = TRUE)
+get.ZeroPolicyOption()
+# [1] FALSE
+set.ZeroPolicyOption(TRUE)
+# [1] FALSE
+get.ZeroPolicyOption()
+# [1] TRUE
+nb2listw(nb)
+```
+```{r}
+plot(st_geometry(nyc_census_data_prepped))
+plot(st_geometry(nyc_census_data)[card(nb) == 0L], add=TRUE, col="red")
+```
+
+```{r}
+args(poly2nb)
+# function (pl, row.names = NULL, snap = sqrt(.Machine$double.eps), 
+#   queen = TRUE, useC = TRUE, foundInBox = NULL) 
+sqrt(.Machine$double.eps)
+#  [1] 1.490116e-08
+nb <- poly2nb(nyc_census_data_prepped, snap=1e+4)
+nb
 ```
 
