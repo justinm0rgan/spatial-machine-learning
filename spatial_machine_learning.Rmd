@@ -29,26 +29,9 @@ options(tigris_use_cache = TRUE)
 ## Load data
 
 Load in census data for NYC main racial demographics with **tidycensus** package.
+
 ```{r set-variables}
 nyc_counties <- c("Bronx","Kings","New York","Queens","Richmond")
-```
-
-Racial data.
-
-```{r load-racial-data}
-get_acs(
-  geography = "tract",
-  variables = c(
-    white = "B03002_003",
-    black = "B03002_004",
-    asian = "B03002_006",
-    hispanic = "B03002_012"
-  ), 
-  state = "NY",
-  county = nyc_counties,
-  geometry = TRUE,
-  year = 2019,
-  key = Sys.getenv("CENSUS_API"))
 ```
 
 ### Median home variables for linear regression data
@@ -57,12 +40,11 @@ Search for variables
 
 ```{r load-variables}
 v20 <- load_variables(2020, "acs5/profile", cache = TRUE)
-
 # View(v20)
 ```
 
-
 ACS estimates acquired are:
+
   - `median_valueE`: The median home value of the Census tract (our outcome variable);
 
   - `median_roomsE`: The median number of rooms for homes in the Census tract;
@@ -108,7 +90,7 @@ variables <- c(
 )
 
 # get acs data
-nyc_census_data <- get_acs(
+(nyc_census_data <- get_acs(
   geography = "tract",
   variables = variables,
   state = "NY",
@@ -117,10 +99,10 @@ nyc_census_data <- get_acs(
   output = "wide",
   year = 2020,
   key = Sys.getenv("CENSUS_API")) %>% 
-  st_transform(2263)
+  st_transform(2263))
 ```
 
-View target variable
+View dependent variable distribution
 
 ```{r target-variable}
 (ggplot_med_income <- 
@@ -178,13 +160,13 @@ Histogram of `median_valueE` distribution.
   labs(x = "Median home value"))
 ```
 
-Right skewed with a clustering of Census Tracts in the lower distribution and a long left tail in the expensive areas. This could lead to a violation of the normality principle let's transforming. 
+Right skewed with a clustering of Census Tracts in the lower distribution and a long left tail in the expensive areas. This could lead to a violation of the normality principle let's apply some type of transformation. 
 
 ### Transformation
 
-  - try some type of transformation, sqrt?
+Square root transformation albeit weaker then logarithmic or cubed transformations, is used for for reducing right skewness. 
 
-```{r transform}
+```{r transform-sqrt}
 ggplot_med_home_sqrt <- nyc_census_data %>% 
   ggplot(aes(fill = sqrt(median_valueE))) + 
     geom_sf(color = NA) + 
@@ -208,8 +190,12 @@ nyc_hist_sqrt <- nyc_census_data %>%
 ggplot_med_home_sqrt + nyc_hist_sqrt
 ```
 
-### Select only estimates, omit NA
+### Add features, select only estimates and omit margins and NA
 
+Added in a few features:
+
+ - `pop_density` which measures population density in a given geogrphic area
+ - `median_structure_age` which subtracts 2020 from `median_year_builtE`
 
 ```{r selectE-omit-NA}
 (nyc_census_data_prepped <- nyc_census_data %>% 
@@ -222,14 +208,21 @@ ggplot_med_home_sqrt + nyc_hist_sqrt
 
 ## Modeling
 
+Let's compute a basic liner regression model using the sqrt of median_value as the dependent variable.
+
 ```{r first-model}
+# write formula
 formula <- "sqrt(median_value) ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
 
+# compute model
 model1 <- lm(formula = formula, data = nyc_census_data_prepped)
 
+# view model statistics
 summary(model1)
-
 ```
+
+Highest sigficant p-values are `pct_foreign_born` , `median_age` and `pop_density`. The first two are both negatively correlated with `median_value`, therefore as census tracts percentage of foreign born and median age increase, median home value decreases. Much more so for `pct_foreign_born`. It looks like the denser the population, `median_value` increases. Other positvely correlated values are `median_rooms`, `pct_asian`, `median_structure_age` and `pct_white`. Some of the other negatively correlated values are `percent_ooh` and `median_age`. 
+
 
 ## Correlation
 
