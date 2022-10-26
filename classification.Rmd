@@ -1,0 +1,252 @@
+---
+title: "Spatial Machine Learning"
+author: "Justin Williams"
+date: "2022-09-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages}
+library(dotenv)
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(RColorBrewer)
+library(patchwork)
+library(spdep)
+library(car)
+library(units)
+library(corrr)
+library(spatialreg)
+library(SpatialML)
+library(leaflet)
+library(mapview)
+library(tmap)
+library(tigris)
+options(tigris_use_cache = TRUE)
+```
+
+## Load data
+
+Load in shapefile data for NYC  with **tidycensus** package.
+
+```{r set-variables}
+nyc_counties <- c("Bronx","Kings","New York","Queens","Richmond")
+```
+
+Search for population variable.
+
+```{r load-variables}
+dec2010 <- load_variables(2010, "sf1", cache = TRUE)
+View(dec2010)
+```
+
+Load data
+
+```{r load-median-home-data}
+# variable list
+variables <- c(total_population = "P001001")
+
+# get acs data
+(nyc_pop<- tidycensus::get_decennial(
+  geography = "tract",
+  variables = variables,
+  state = "NY",
+  county = nyc_counties,
+  geometry = TRUE,
+  output = "wide",
+  year = 2010,
+  key = Sys.getenv("CENSUS_API")) %>% 
+  sf::st_transform(2263) %>% 
+  janitor::clean_names())
+```
+
+Get classification USDA food desert dataset
+
+```{r classificatoin-dataset}
+# download
+# url
+url_food_deserts <- "https://www.ers.usda.gov/webdocs/DataFiles/80591/FoodAccessResearchAtlasData2019.xlsx?v=7118.1"
+
+# create temp dir
+td = tempdir()
+# create placeholder file
+destfile = tempfile(tmpdir = td, fileext = ".xlsx")
+# downlaod into the placeholder file
+download.file(url_food_deserts, destfile = destfile)
+
+# save nyc food deserts as df
+df_nyc_food_deserts <- readxl::read_xlsx(
+  destfile,
+  sheet = "Food Access Research Atlas",
+  na = "NULL") %>% 
+  dplyr::filter(State == "New York" & County %in% 
+                  c("Bronx County","Kings County",
+                    "New York County","Richmond County","Queens County"))
+
+# create ct2010 for joining and drop uncessary cols
+# drop cols list
+drop_cols <- c('LILATracts_1And10', 'LILATracts_1And20',
+               'LA1and10', 'LA1and20', 'LATracts1', 
+               'LATracts10', 'LATracts20', 'LAPOP1_10', 
+               'LAPOP1_20','LALOWI1_10', 'LALOWI1_20')
+
+# subset dataframe and add join column
+df_nyc_food_deserts <- df_nyc_food_deserts %>% 
+  dplyr::select(!57:135) %>% 
+  dplyr::select(!drop_cols) %>% 
+  janitor::clean_names()
+
+colnames(df_nyc_food_deserts)
+```
+
+Merge shapefile with food desert data
+
+```{r merge}
+# merge with shapfile
+df_nyc_food_deserts_shp <- df_nyc_food_deserts %>% 
+  left_join(nyc_pop, by = c("census_tract" = "geoid")) %>% 
+  st_as_sf() %>% 
+  st_transform(2263)
+```
+
+View dependent variable distribution
+
+```{r target-variable}
+ggplot_nyc_food_deserts <- df_nyc_food_deserts_shp %>% 
+  ggplot(aes(fill = factor(lila_tracts_half_and10))) +
+  geom_sf(color = NA, alpha = 0.9) + 
+  scale_fill_manual(labels = c("No","Yes"),
+                  values = c(scales::muted("Blue"),("Gold"))) +
+  theme_void() + 
+  labs(title = "NYC Food deserts",
+       subtitle = "(btwn 0.5 mile and 10 miles)",
+       fill = "Food Desert ",
+       caption = "*U.S. Department of Agriculture") +
+  theme(plot.title.position = 'plot',
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+# # save plot
+# ggsave("./images/ggplot_nyc_food_deserts.png",
+#        plot = ggplot_nyc_food_deserts,
+#        bg = "white")
+```
+
+Try this with mapview
+
+```{r mapview-version}
+(mapview_nyc_food_deserts <- df_nyc_food_deserts_shp %>% 
+  mapview(
+    zcol = "lila_tracts_half_and10",
+    layer.name = "NYC Food Deserts (0.5 to 10 miles)",
+    alpha = 0.9,
+    lwd=0.125,
+    color = "white",
+    na.alpha = 0.8,
+    col.regions = c(scales::muted("Blue"),("Gold"))))
+
+# # save as png
+# mapshot(mapview_nyc_food_deserts,
+#         file = "./images/mapview_nyc_food_deserts.png")
+```
+
+## Missing values
+
+```{r missing-values}
+# apply(is.na(df_nyc_food_deserts_shp), 2, which)
+
+df_nyc_food_deserts_shp[is.na(df_nyc_food_deserts_shp$median_family_income),]
+```
+
+## NYPD Shooting Incident Data (Historic)
+
+List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+
+```{r load-data}
+url <- "https://data.cityofnewyork.us/api/geospatial/833y-fsy8?method=export&format=GeoJSON"
+
+(df_nypd_shooting <- 
+  sf::st_read(url) %>%  
+  sf::st_transform(2263) %>% 
+  dplyr::mutate(dplyr::across(
+    c(perp_sex, perp_age_group, jurisdiction_code, vic_sex,
+    statistical_murder_flag, vic_race, precinct, perp_race,
+    boro, vic_age_group, location_desc), 
+    .fns = as.factor)) %>% 
+  dplyr::mutate(dplyr::across(
+    c(latitude, longitude, x_coord_cd, y_coord_cd,
+    incident_key), .fns = as.numeric)))
+```
+
+Ok, let use the `statistical_murder_flag` as the dependent variable for a simple yes or no classification problem.
+
+Let's look at some missing values.
+
+```{r na}
+glimpse(df_nypd_shooting)
+```
+
+```{r}
+unique(df_nypd_shooting$location_desc)
+```
+
+
+Let's look at the class imbalance.
+
+```{r target-true}
+# true
+sum(df_nypd_shooting$statistical_murder_flag == "true")
+```
+
+```{r target-false}
+# false
+sum(df_nypd_shooting$statistical_murder_flag == "false")
+```
+
+Visual to visualize class imbalance
+
+```{r class-imbalance}
+df_nypd_shooting %>% 
+  st_drop_geometry() %>% 
+  group_by(statistical_murder_flag) %>% 
+  summarise(count = n()) %>%
+  mutate(percent = count/sum(count)) %>% 
+  ggplot() +
+    geom_bar(aes(percent,statistical_murder_flag,
+                 fill = statistical_murder_flag), 
+             stat = "identity") +
+    scale_x_continuous(labels = scales::label_percent()) +
+    labs(x="",y="",fill="",title="NYC Murder in Shooting Incident",
+         subtitle = "(2006 to present)")
+```
+
+## Modeling
+
+Let's try it with a glm
+
+```{r glm-log-reg}
+# define formula
+formula_nypd <- "statistical_murder_flag ~ ."
+
+# drop geometry
+df_nypd_shooting_prep <- df_nypd_shooting %>% sf::st_drop_geometry() %>% 
+  select(!occur_date)
+colnames(df_nypd_shooting)
+glm(formula = formula_nypd, data = df_nypd_shooting_prep,
+    family = "binomial")
+```
+
+
+```{r first-model}
+# define formula
+?SpatialML::grf()
+
+
+```
+
+
+
