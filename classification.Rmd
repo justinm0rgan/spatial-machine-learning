@@ -116,7 +116,7 @@ df_nyc_food_deserts_shp <- df_nyc_food_deserts %>%
 View dependent variable distribution
 
 ```{r target-variable}
-ggplot_nyc_food_deserts <- df_nyc_food_deserts_shp %>% 
+(ggplot_nyc_food_deserts <- df_nyc_food_deserts_shp %>% 
   ggplot(aes(fill = factor(lila_tracts_half_and10))) +
   geom_sf(color = NA, alpha = 0.9) + 
   scale_fill_manual(labels = c("No","Yes"),
@@ -128,7 +128,7 @@ ggplot_nyc_food_deserts <- df_nyc_food_deserts_shp %>%
        caption = "*U.S. Department of Agriculture") +
   theme(plot.title.position = 'plot',
         plot.title = element_text(hjust = 0.5),
-        plot.subtitle = element_text(hjust = 0.5))
+        plot.subtitle = element_text(hjust = 0.5)))
 
 # # save plot
 # ggsave("./images/ggplot_nyc_food_deserts.png",
@@ -162,6 +162,61 @@ Try this with mapview
 df_nyc_food_deserts_shp[is.na(df_nyc_food_deserts_shp$median_family_income),]
 ```
 
+## Extract centroid coordinates from geometry
+
+The `grf` function from the `SpatialML` packages require a list of coordinates. We need to extract them from the `geometry` column which contains polygons for each census tract in NYC
+
+```{r extract-centroids}
+# get centroids from each geom
+df_nyc_food_deserts_shp <- df_nyc_food_deserts_shp %>% 
+  mutate(lon = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+         lat = map_dbl(geometry, ~st_centroid(.x)[[2]]))
+```
+
+Run simple model
+
+```{r spatial-modeling}
+?SpatialML::grf
+```
+
+```{r grf-model}
+# define formula
+# select cols for model
+all_cols_1 <- c(5:15,46:59)
+
+# filter df
+df_prepped <- df_nyc_food_deserts_shp %>% 
+  st_drop_geometry() %>%
+  filter(!is.na(median_family_income)) %>% 
+  select(all_cols_1)
+
+# create coords 
+coords <- df_nyc_food_deserts_shp %>% 
+  st_drop_geometry() %>% 
+  filter(!is.na(median_family_income)) %>% 
+  select(lat,lon)
+
+# model
+grf_model <- grf(formula = grf_form,
+    dframe = df_prepped,
+    bw=162,
+    ntree = 500,
+    mtry = 2,
+    kernel = "adaptive",
+    forests = TRUE,
+    coords = coords)
+```
+
+
+```{r}
+colnames(df_prepped)
+```
+
+```{r}
+grf_form <- c("lila_tracts_half_and10 ~ pop2010+ohu2010+group_quarters_flag+numgqtrs+pctgqtrs+hunv_flag+low_income_tracts+poverty_rate+median_family_income+tract_lowi+tract_kids+tract_seniors+tract_white+tract_black+tract_asian+tract_nhopi+tract_aian+tract_o_multir+tract_hispanic+tract_hunv+tract_snap")
+```
+
+
 ## NYPD Shooting Incident Data (Historic)
 
 List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
@@ -190,8 +245,17 @@ Let's look at some missing values.
 glimpse(df_nypd_shooting)
 ```
 
+```{r group-loc-desc}
+df_nypd_shooting %>% st_drop_geometry() %>% 
+  group_by(location_desc) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+```
+
 ```{r}
-unique(df_nypd_shooting$location_desc)
+df_nypd_shooting %>% st_drop_geometry() %>% 
+  group_by(occur_date) %>% 
+  summarise(count = n()) %>% arrange(desc(count))
 ```
 
 
@@ -233,11 +297,17 @@ Let's try it with a glm
 formula_nypd <- "statistical_murder_flag ~ ."
 
 # drop geometry
-df_nypd_shooting_prep <- df_nypd_shooting %>% sf::st_drop_geometry() %>% 
-  select(!occur_date)
-colnames(df_nypd_shooting)
-glm(formula = formula_nypd, data = df_nypd_shooting_prep,
+df_nypd_shooting_prep_2021 <- df_nypd_shooting_2021 %>% sf::st_drop_geometry()
+
+# simple model
+glm(formula = formula_nypd, data = df_nypd_shooting_prep_2021,
     family = "binomial")
+```
+Look at just 2022
+
+```{r}
+df_nypd_shooting_2021 <- df_nypd_shooting %>% 
+  filter(occur_date > "2021-01-01")
 ```
 
 
