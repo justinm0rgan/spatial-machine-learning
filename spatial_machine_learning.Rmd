@@ -21,6 +21,8 @@ library(units)
 library(corrr)
 library(spatialreg)
 library(SpatialML)
+library(spgwr)
+library(GWmodel)
 library(leaflet)
 library(mapview)
 library(tmap)
@@ -413,36 +415,162 @@ nb <- poly2nb(nyc_census_data_prepped, snap=1e+4)
 nb
 ```
 
-## Geographically Weighted Random Forest (GRF)
+## Geographically Weighted Random Forest (GRF) from SpatialML package
 
-Download classification dataset.
+### Extract centroid coordinates from geometry
 
-```{r classification-dataset}
-# define url
-url_bridges <- "https://data.cityofnewyork.us/api/views/4yue-vjfc/rows.csv?accessType=DOWNLOAD"
+The `grf` function from the `SpatialML` packages require a list of coordinates. We need to extract them from the `geometry` column which contains polygons for each census tract in NYC. 
 
-# create tempfile
-destfile = tempfile()
+We also need to create a coordinates object as `SpatialML` accepts this as a separate argument.
 
-# download file
-download.file(url = url_bridges, destfile = destfile)
+```{r extract-centroids}
+# get centroids from each geom
+nyc_census_data_prepped <- nyc_census_data_prepped %>% 
+  mutate(lon = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+         lat = map_dbl(geometry, ~st_centroid(.x)[[2]]))
 
-# save as df
-df_bridges <- read.csv(destfile) %>% janitor::clean_names()
-
-# convert dependent to factor for multi class classification
-df_bridges$verbal_rating <- factor(df_bridges$verbal_rating,
-                                      levels = c("CLOSED","POOR","FAIR",
-                                                 "GOOD","VGOOD"))
-
-View(df_bridges)
+# create coords column
+coords <- nyc_census_data_prepped %>% 
+  st_drop_geometry() %>% 
+  select(lat,lon)
 ```
 
-```{r}
-# define formula
+Prep dataset for modeling
+
+```{r prep-grf}
+# drop residuals
+nyc_census_grf_prepped <- nyc_census_data_prepped %>% 
+  st_drop_geometry() %>% 
+  select(!c(GEOID, NAM, residuals, lagged_residuals, lat, lon))
+```
+
+Model
+
+```{r first-model}
+# define formula for grf
+formula_grf <- "median_value ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
+
+# model
+grf_model <- grf(formula = formula_grf,
+    dframe = nyc_census_grf_prepped,
+    bw=162,
+    ntree = 500,
+    mtry = 2,
+    kernel = "adaptive",
+    forests = TRUE,
+    coords = coords)
+```
+
+```{r }
+Income
+```
 
 
-SpatialML::grf()
+Try with built-in dataset
+
+```{r income-dataset}
+data(Income)
+Coords <- Income[,1:2]
+grf_income <- grf(Income01 ~ UnemrT01 + PrSect01, dframe=Income, bw=60,
+                kernel="adaptive", coords=Coords)
+```
+
+Need to figure out how to automate this process dependent on the dataset.
+```{r wts-for-spatialreg-models}
+?poly2nb()
+?nb2listw()
+```
+
+Functions for modeling with the GWmodels package
+```{r functions-gwmodel}
+?bw.gwr
+?gwr.basic
+```
+
+# Geographically Weighted Regression (GWR) from GWmodels Package
+
+## Choosing bandwidth for GWR
+
+Have to convert `sf` object to a `SpatialPolygonsDataFrame` as **GWmodel** does not support `sf` objects as of yet.
+
+```{r bandwidth-gwr}
+# convert to sp object
+nyc_census_data_prepped_sp <- nyc_census_data_prepped %>%
+  sf::as_Spatial()
+
+# choose bandwidth
+bw <- bw.gwr(
+  formula = formula, 
+  data = nyc_census_data_prepped_sp, 
+  kernel = "bisquare",
+  adaptive = TRUE
+  )
+```
+
+`bw.gwr()` chose 234 as the number of nearest neighbors based on cross-validation. This means that for each Census tract, the nearest 234 of the total 2165 Census tracts in the NYC region will be used to estimate the local model, with weights calculated using the bisquare distance-decay function.
+
+### Fit model
+
+```{r fit-model}
+gw_model <- gwr.basic(
+  formula = formula, 
+  data = nyc_census_data_prepped_sp, 
+  bw = bw,
+  kernel = "bisquare",
+  adaptive = TRUE
+)
+```
+Get model objects
+
+```{r model-object}
+names(gw_model)
+```
+
+SDF is the `SpatialPolygonsDataFrame` and we can convert it to an `sf` object.
+
+```{r convert-results}
+gw_model_results <- gw_model$SDF %>%
+  st_as_sf() 
+
+names(gw_model_results)
+```
+
+Plot results
+
+```{r results-plot}
+ggplot(gw_model_results, aes(fill = Local_R2)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() + 
+  theme_void()
+```
+
+The yellow (higher R2) sections are where the model performs better. Staten Island, parts of south-eastern Queens and Brooklyn.
+
+# Geographically Weighted Regression (GWR) using spgwr packages
+
+## Get bandwidth
+
+Have to pass this coordinates as a matrix not df.
+
+```{r bandwidth-spgwr-gwr}
+bwG <- spgwr::gwr.sel(formula = formula, 
+               data = nyc_census_data_prepped, 
+               gweight = gwr.Gauss, 
+               coords = as.matrix(coords),
+               verbose = FALSE)
+bwG
+```
+
+## Fit GWR model
+
+```{r fit-gwr-model}
+gwrG <- spgwr::gwr(formula = formula, 
+            data = nyc_census_data_prepped, 
+            bandwidth = bwG,
+            coords = as.matrix(coords),
+            gweight = gwr.Gauss, 
+            hatmatrix = TRUE)
+gwrG
 ```
 
 
