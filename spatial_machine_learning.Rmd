@@ -356,6 +356,7 @@ lag_model <- lagsarlm(
 # model summary
 summary(lag_model, Nagelkerke = TRUE)
 
+spatialreg::
 ```
 
 R-squared is higher, and estimates are higher which illustrates the importance of controlling for spatial lag.
@@ -415,7 +416,18 @@ nb <- poly2nb(nyc_census_data_prepped, snap=1e+4)
 nb
 ```
 
-## Geographically Weighted Random Forest (GRF) from SpatialML package
+# Geographically Weighted Random Forest (GRF) from SpatialML package
+
+Functions to use from `SpatialML` package.
+Also have to extract list of coordinates from dataset and pass those into the modeling functions.
+
+```{r spatial-ml-functions}
+# basic geographical random forest model
+?SpatialML::grf()
+# predict function for grf
+?SpatialML::predict.grf()
+```
+
 
 ### Extract centroid coordinates from geometry
 
@@ -477,17 +489,23 @@ grf_income <- grf(Income01 ~ UnemrT01 + PrSect01, dframe=Income, bw=60,
 
 Need to figure out how to automate this process dependent on the dataset.
 ```{r wts-for-spatialreg-models}
-?poly2nb()
-?nb2listw()
-```
-
-Functions for modeling with the GWmodels package
-```{r functions-gwmodel}
-?bw.gwr
-?gwr.basic
+# constructs neighbors weights for polygon
+?spdep::poly2nb
+# supplements a neigbors list with spatial weights for the chosen scheme
+?spdep::nb2listw
 ```
 
 # Geographically Weighted Regression (GWR) from GWmodels Package
+
+Functions for modeling with the GWmodels package
+```{r functions-gwmodel}
+# choose bandwidth for gwr
+?GWmodel::bw.gwr
+# basic geographically weight regression model
+?GWmodel::gwr.basic
+# predict gwr
+?GWmodel::gwr.predict
+```
 
 ## Choosing bandwidth for GWR
 
@@ -547,6 +565,17 @@ ggplot(gw_model_results, aes(fill = Local_R2)) +
 The yellow (higher R2) sections are where the model performs better. Staten Island, parts of south-eastern Queens and Brooklyn.
 
 # Geographically Weighted Regression (GWR) using spgwr packages
+
+Functions for use with `spgwr` package
+
+```{r spgwr-functions}
+# finds bandwidth
+?spgwr::ggwr.sel()
+# basic gwr model
+?spgwr::gwr()
+# predict?
+# looks like predictions is an arg within the basic gwr model, not exactly sure how to utilize this, will have to look up info.
+```
 
 ## Get bandwidth
 
