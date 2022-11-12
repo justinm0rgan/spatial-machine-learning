@@ -601,6 +601,39 @@ gwrG <- spgwr::gwr(formula = formula,
             hatmatrix = TRUE)
 gwrG
 ```
+```{r}
+data(meuse)
+coordinates(meuse) <- c("x", "y")
+meuse$ffreq <- factor(meuse$ffreq)
+data(meuse.grid)
+coordinates(meuse.grid) <- c("x", "y")
+meuse.grid$ffreq <- factor(meuse.grid$ffreq)
+gridded(meuse.grid) <- TRUE
+xx <- gwr(cadmium ~ dist, meuse, bandwidth = 228, hatmatrix=TRUE)
+xx
+x <- gwr(cadmium ~ dist, meuse, bandwidth = 228, fit.points = meuse.grid,
+predict=TRUE, se.fit=TRUE, fittedGWRobject=xx)
+x
+spplot(x$SDF, "pred")
+spplot(x$SDF, "pred.se")
+```
+
+```{r}
+data(oldcol, package="spdep")
+lw <- spdep::nb2listw(COL.nb)
+COL.lag.eig <- lagsarlm(CRIME ~ INC + HOVAL, data=COL.OLD, lw)
+COL.mix.eig <- lagsarlm(CRIME ~ INC + HOVAL, data=COL.OLD, lw,
+type="mixed")
+print(p1 <- predict(COL.mix.eig))
+print(p2 <- predict(COL.mix.eig, newdata=COL.OLD, listw=lw, pred.type = "TS",
+legacy.mixed = TRUE))
+
+?predict()
+?data(oldcol)
+
+lw
+```
+
 
 
 
