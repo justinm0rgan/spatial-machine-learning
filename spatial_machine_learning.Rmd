@@ -28,6 +28,10 @@ library(mapview)
 library(tmap)
 library(tigris)
 options(tigris_use_cache = TRUE)
+if (!require("rspat")) remotes::install_github("rspatial/rspat",
+                                               force = TRUE)
+library(rspat)
+library(jtools)
 ```
 
 ## Load data
@@ -320,6 +324,124 @@ ggplot(aes(x = residuals)) +
 
 Assumption of residual independence commonly violated in models using spatial data due to *spatial autocorrelation* in the error term. Which means model performance depends on geographic location. This can be assessed using Moran's I.
 
+## Building the Spatial Weights Matrix
+
+```{r spatial-weights-matrix, fig.width=9, fig.height=7}
+# filter for si
+si <- nyc_census_data_prepped[str_detect(nyc_census_data_prepped$NAM, "Richmond"),]
+
+# store geometry of polygons
+nyc_geom <- st_geometry(nyc_census_data_prepped)
+si_geom <- st_geometry(si)
+# store the centroids of the polygons
+nyc_centroids <- st_centroid(nyc_geom)
+si_centroids <- st_centroid(si_geom)
+
+# plot the geom with centroids
+jpeg("images/nyc_geom_centroids.jpg", width = 1200, height = 1000)
+plot(nyc_geom, reset=FALSE, main = "NYC Geometry and Centroids",
+     cex.main=3, sub = "(Census Tracts)", cex.sub=2)
+plot(nyc_centroids, pch = 16, col = 2, size = 3,add = TRUE)
+dev.off()
+
+# plot si
+jpeg("images/si_geom_centroids.jpg", width = 1200, height = 1000)
+plot(si_geom, reset=FALSE, main = "Staten Island Geometry and Centroids",
+     cex.main=3, sub = "(Census Tracts)", cex.sub=2)
+plot(si_centroids, pch = 16, col = 2, size = 3,add = TRUE)
+dev.off()
+```
+
+Build Neighborhood
+
+```{r connect-polygons}
+# connects polygons that touch boundaries or corners
+
+nyc_nb <- poly2nb(nyc_census_data_prepped)
+si_nb <- poly2nb(si)
+
+nyc_nb
+```
+
+```{r map-neighborhood-matrix, fig.width=9, fig.height=7}
+# visulize the neighborhood structure
+jpeg("images/nyc_neighborhood_queens.jpg", width = 1000, height = 800)
+plot(nyc_geom,
+     main = "NYC Neighborhood Structure (Queen)",
+     sub = "(Census Tracts)",
+     reset = FALSE,
+     cex.main = 3,
+     cex.sub = 2)
+plot(nyc_nb, nyc_centroids,
+     add = TRUE,
+     col = 2,
+     lwd = 1.5)
+dev.off()
+
+jpeg("images/si_neighborhood_queens.jpg", width = 1000, height = 800)
+plot(si_geom,
+     main = "Staten Island Neighborhood Structure (Queen)",
+     sub = "(Census Tracts)",
+     reset = FALSE,
+     cex.main = 3,
+     cex.sub = 2)
+plot(si_nb, si_centroids,
+     add = TRUE,
+     col = 2,
+     lwd = 1.5)
+dev.off()
+```
+
+Let's look at it with Rook neighborhood structure.
+
+```{r si-rook-neighborhood, fig.width=9, fig.height=7}
+# create new neighbors list
+si_nb_rook <- poly2nb(si, queen=FALSE)
+
+# create plot
+jpeg("images/si_neighborhood_rook.jpg", width = 1000, height = 800)
+plot(si_geom,
+     main = "Staten Island Neighborhood Structure (Rook)",
+     sub = "(Census Tracts)",
+     reset = FALSE,
+     cex.main = 3,
+     cex.sub = 2)
+plot(si_nb_rook, si_centroids,
+     add = TRUE,
+     col = 2,
+     lwd = 1.5)
+dev.off()
+```
+
+Let's look at Rook and Queen method for just Staten Island
+
+```{r si-rook-queen, fig.width=9, fig.height=7}
+jpeg("images/si_neighborhood_rook_queen.jpg", width = 1000, height = 800)
+par(mfrow = c(1,2))
+
+plot(si_geom,
+     main = "Queen",
+     reset = FALSE,
+     cex.main = 3)
+plot(si_nb, si_centroids,
+     add = TRUE,
+     col = 2,
+     lwd = 1.5)
+
+
+plot(si_geom,
+     main = "Rook",
+     reset = FALSE,
+     cex.main = 3)
+plot(si_nb_rook, si_centroids,
+     add = TRUE,
+     col = 2,
+     lwd = 1.5)
+
+dev.off()
+```
+
+
 ```{r moran-test}
 wts <- nyc_census_data_prepped %>%
   poly2nb(snap=1e+4) %>%
@@ -327,16 +449,20 @@ wts <- nyc_census_data_prepped %>%
 
 moran.test(nyc_census_data_prepped$residuals, wts)
 ```
+
 Graph Moran's I
 
 ```{r}
 nyc_census_data_prepped$lagged_residuals <- lag.listw(wts, nyc_census_data_prepped$residuals)
 
-nyc_census_data_prepped %>% 
+(morans_i_res <- nyc_census_data_prepped %>% 
 ggplot(aes(x = residuals, y = lagged_residuals)) + 
   theme_minimal() + 
   geom_point(alpha = 0.5) + 
-  geom_smooth(method = "lm", color = "red")
+  geom_smooth(method = "lm", color = "red"))
+
+ggsave("iamge/morans_i_res.png",
+       plot = morans_i_res)
 ```
 
 Shows positive spatial autocorrelation in residuals suggesting assumption of independence in error term is violated.
@@ -355,13 +481,11 @@ lag_model <- lagsarlm(
 
 # model summary
 summary(lag_model, Nagelkerke = TRUE)
-
-spatialreg::
 ```
 
 R-squared is higher, and estimates are higher which illustrates the importance of controlling for spatial lag.
 
-### Spatial regression
+### Spatial error
 
 ```{r spatial-reg}
 # create model
@@ -374,6 +498,13 @@ error_model <- errorsarlm(
 # model summary
 summary(error_model, Nagelkerke = TRUE)
 ```
+
+Compare first three models
+
+```{r compare-models}
+jtools::export_summs(model1, lag_model, error_model)
+```
+
 Recompute Moran's I
 
 ```{r lag-moran}
@@ -384,39 +515,7 @@ moran.test(lag_model$residuals, wts)
 moran.test(error_model$residuals, wts)
 ```
 
-## From Github issue
-
-```{r}
-nb <- poly2nb(nyc_census_data_prepped)
-nb
-nb2listw(neighbours = nb,  zero.policy = TRUE)
-# Error in print.listw(x) : 
-#  regions with no neighbours found, use zero.policy=TRUE
-print(nb2listw(neighbours = nb,  zero.policy = TRUE),  zero.policy = TRUE)
-get.ZeroPolicyOption()
-# [1] FALSE
-set.ZeroPolicyOption(TRUE)
-# [1] FALSE
-get.ZeroPolicyOption()
-# [1] TRUE
-nb2listw(nb)
-```
-```{r}
-plot(st_geometry(nyc_census_data_prepped))
-plot(st_geometry(nyc_census_data)[card(nb) == 0L], add=TRUE, col="red")
-```
-
-```{r}
-args(poly2nb)
-# function (pl, row.names = NULL, snap = sqrt(.Machine$double.eps), 
-#   queen = TRUE, useC = TRUE, foundInBox = NULL) 
-sqrt(.Machine$double.eps)
-#  [1] 1.490116e-08
-nb <- poly2nb(nyc_census_data_prepped, snap=1e+4)
-nb
-```
-
-# Geographically Weighted Random Forest (GRF) from SpatialML package
+## Geographically Weighted Random Forest (GRF) from SpatialML package
 
 Functions to use from `SpatialML` package.
 Also have to extract list of coordinates from dataset and pass those into the modeling functions.
@@ -472,11 +571,6 @@ grf_model <- grf(formula = formula_grf,
     forests = TRUE,
     coords = coords)
 ```
-
-```{r }
-Income
-```
-
 
 Try with built-in dataset
 
@@ -601,6 +695,9 @@ gwrG <- spgwr::gwr(formula = formula,
             hatmatrix = TRUE)
 gwrG
 ```
+
+
+
 ```{r}
 data(meuse)
 coordinates(meuse) <- c("x", "y")
@@ -631,9 +728,18 @@ legacy.mixed = TRUE))
 ?predict()
 ?data(oldcol)
 
-lw
+?columbus
+columbus <- st_read(system.file("shapes/columbus.shp", package="spData")[1], quiet=TRUE)
+
+columbus
 ```
 
+Rspat California dataset
+
+```{r rspat-dataset}
+rspat::
+
+```
 
 
 
