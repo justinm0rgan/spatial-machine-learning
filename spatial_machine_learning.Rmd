@@ -32,6 +32,9 @@ if (!require("rspat")) remotes::install_github("rspatial/rspat",
                                                force = TRUE)
 library(rspat)
 library(jtools)
+library(mapboxapi)
+library(sp)
+library(viridis)
 ```
 
 ## Load data
@@ -399,7 +402,7 @@ Let's look at it with Rook neighborhood structure.
 si_nb_rook <- poly2nb(si, queen=FALSE)
 
 # create plot
-jpeg("images/si_neighborhood_rook.jpg", width = 1000, height = 800)
+png("images/si_neighborhood_rook.png", width = 1000, height = 800)
 plot(si_geom,
      main = "Staten Island Neighborhood Structure (Rook)",
      sub = "(Census Tracts)",
@@ -416,27 +419,26 @@ dev.off()
 Let's look at Rook and Queen method for just Staten Island
 
 ```{r si-rook-queen, fig.width=9, fig.height=7}
-jpeg("images/si_neighborhood_rook_queen.jpg", width = 1000, height = 800)
-par(mfrow = c(1,2))
+png("images/si_neighborhood_rook_queen.png", width = 1000, height = 800)
+par(mfrow = c(1,2), bg = NA)
 
 plot(si_geom,
-     main = "Queen",
      reset = FALSE,
      cex.main = 3)
 plot(si_nb, si_centroids,
      add = TRUE,
      col = 2,
      lwd = 1.5)
+title("Queen", line = -6, cex.main = 3)
 
 
 plot(si_geom,
-     main = "Rook",
-     reset = FALSE,
-     cex.main = 3)
+     reset = FALSE)
 plot(si_nb_rook, si_centroids,
      add = TRUE,
      col = 2,
      lwd = 1.5)
+title("Rook", line = -6, cex.main = 3)
 
 dev.off()
 ```
@@ -555,16 +557,38 @@ nyc_census_grf_prepped <- nyc_census_data_prepped %>%
   select(!c(GEOID, NAM, residuals, lagged_residuals, lat, lon))
 ```
 
-Model
+Define formula
 
-```{r first-model}
+```{r formula}
 # define formula for grf
 formula_grf <- "median_value ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
+```
 
+Find optimal bandwidth
+
+```{r optimal-bandwidth-grf, eval=FALSE}
+# this takes way too long, will set bw to gwr setting
+bwgrf <- SpatialML::grf.bw(formula = formula_grf,
+                  dataset = nyc_census_grf_prepped,
+                  kernel = "adaptive",
+                  coords = coords,
+                  bw.min = NULL,
+                  bw.max = NULL,
+                  step = 1,
+                  trees = 500,
+                  mtry = NULL,
+                  importance = "impurity",
+                  forests = FALSE,
+                  weighted = TRUE)
+```
+
+Run GRF Model.
+
+```{r first-model}
 # model
 grf_model <- grf(formula = formula_grf,
     dframe = nyc_census_grf_prepped,
-    bw=162,
+    bw = 98,
     ntree = 500,
     mtry = 2,
     kernel = "adaptive",
@@ -572,24 +596,69 @@ grf_model <- grf(formula = formula_grf,
     coords = coords)
 ```
 
-Try with built-in dataset
+Global R2
 
-```{r income-dataset}
-data(Income)
-Coords <- Income[,1:2]
-grf_income <- grf(Income01 ~ UnemrT01 + PrSect01, dframe=Income, bw=60,
-                kernel="adaptive", coords=Coords)
+```{r grf-global-r-squared}
+grf_model$Global.Model$r.squared
 ```
 
-Need to figure out how to automate this process dependent on the dataset.
-```{r wts-for-spatialreg-models}
-# constructs neighbors weights for polygon
-?spdep::poly2nb
-# supplements a neigbors list with spatial weights for the chosen scheme
-?spdep::nb2listw
+View results on map
+
+```{r map-local-grf}
+# add local rsquared col to grf data
+nyc_census_data_prepped$localr2 <- grf_model$LGofFit$LM_Rsq100
+
+
+# plot local r2 for grf
+ggplot(nyc_census_data_prepped, 
+       aes(fill = localr2)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() + 
+  theme_void()
 ```
 
-# Geographically Weighted Regression (GWR) from GWmodels Package
+Plot with base map
+
+```{r grf-plot-w-basemap}
+# load api key from .env
+mapbox_api <- mb_access_token(Sys.getenv("MAPBOX_API"),
+                              install = T,
+                              overwrite = T)
+#set tiles
+nyc_tiles <- 
+  get_static_tiles(
+    location = nyc_census_data_prepped,
+    zoom = 10,
+    style_id = "light-v9",
+    username = "mapbox",
+    access_token = mapbox_api
+  )
+
+# grf
+nyc_grf <- tm_shape(nyc_census_data_prepped) +
+  tm_fill("localr2", 
+          palette = "OrRd", 
+          title = "Local r2") +
+  tm_layout(main.title = "GRF (SpatialML) Local r2 Output")
+
+# gtrf with basemap
+nyc_grf_basemap <- tm_shape(nyc_tiles) +
+  tm_rgb() +
+  nyc_grf +
+  tm_scale_bar(position = c(0.01, 0),
+               just = "left") + 
+  tm_compass(position = c("right", "top")) + 
+  tm_credits("(c) Mapbox, OSM    ", 
+             bg.color = "white",
+             position = c("RIGHT", "BOTTOM"))
+
+# save map
+tmap_save(nyc_grf_basemap,
+          filename = "./images/tmap_grf_basemap.png")
+
+```
+
+## Geographically Weighted Regression (GWR) from GWmodels Package
 
 Functions for modeling with the GWmodels package
 ```{r functions-gwmodel}
@@ -631,12 +700,19 @@ gw_model <- gwr.basic(
   kernel = "bisquare",
   adaptive = TRUE
 )
+
+gw_model
 ```
 Get model objects
 
 ```{r model-object}
 names(gw_model)
 ```
+
+```{r}
+gw_model$GW.arguments$
+```
+
 
 SDF is the `SpatialPolygonsDataFrame` and we can convert it to an `sf` object.
 
@@ -673,14 +749,15 @@ Functions for use with `spgwr` package
 
 ## Get bandwidth
 
-Have to pass this coordinates as a matrix not df.
+If we pass data as sp object no need to pass coords arg.
 
 ```{r bandwidth-spgwr-gwr}
 bwG <- spgwr::gwr.sel(formula = formula, 
-               data = nyc_census_data_prepped, 
-               gweight = gwr.Gauss, 
-               coords = as.matrix(coords),
-               verbose = FALSE)
+               data = nyc_census_data_prepped_sp,
+               adapt = TRUE,
+               gweight = gwr.bisquare,
+               method = "cv",
+               verbose = TRUE)
 bwG
 ```
 
@@ -688,58 +765,123 @@ bwG
 
 ```{r fit-gwr-model}
 gwrG <- spgwr::gwr(formula = formula, 
-            data = nyc_census_data_prepped, 
-            bandwidth = bwG,
-            coords = as.matrix(coords),
-            gweight = gwr.Gauss, 
+            data = nyc_census_data_prepped_sp,
+            adapt = bwG,
+            gweight = gwr.bisquare, 
             hatmatrix = TRUE)
 gwrG
 ```
 
+```{r global-r-squared-spgwr}
+?spgwr::gwr()
 
+gwrG$
+```
+
+
+Let's view Local R2 values for GWR models.
+
+```{r mapview-local-r2}
+# gwmodel add to sp object
+nyc_census_data_prepped_sp$gwmodel <- gw_model$SDF$Local_R2
+
+# spgwr add to sp object
+nyc_census_data_prepped_sp$spgwr <- gwrG$SDF$localR2
+
+# load api key from .env
+mapbox_api <- mb_access_token(Sys.getenv("MAPBOX_API"),
+                              install = T,
+                              overwrite = T)
+#set tiles
+nyc_tiles <- 
+  get_static_tiles(
+    location = nyc_census_data_prepped,
+    zoom = 10,
+    style_id = "light-v9",
+    username = "mapbox",
+    access_token = mapbox_api
+  )
+
+# spgwr
+nyc_spgwr <- tm_shape(nyc_census_data_prepped_sp) +
+  tm_fill("spgwr", 
+          palette = "RdPu", 
+          title = "Local r2") +
+  tm_layout(main.title = "GWR (spgwr) Local r2 Output")
+
+# gwmodels
+nyc_gw_models <- tm_shape(nyc_census_data_prepped_sp) +
+  tm_fill("gwmodel", 
+          palette = "GnBu", 
+          title = "Local r2") +
+  tm_layout(main.title = "GWR (GWModel) Local r2 Output")
+
+# visulaize gwmodels with basemap
+nyc_gwmodels_basemap <- tm_shape(nyc_tiles) +
+  tm_rgb() +
+  nyc_gw_models +
+  tm_scale_bar(position = c(0.01, 0),
+               just = "left") + 
+  tm_compass(position = c("right", "top")) + 
+  tm_credits("(c) Mapbox, OSM    ", 
+             bg.color = "white",
+             position = c("RIGHT", "BOTTOM"))
+
+# visulaize spgwr with basemap
+nyc_spgwr_basemap <- tm_shape(nyc_tiles) +
+  tm_rgb() +
+  nyc_spgwr +
+  tm_scale_bar(position = c(0.01, 0),
+               just = "left") + 
+  tm_compass(position = c("right", "top")) + 
+  tm_credits("(c) Mapbox, OSM    ", 
+             bg.color = "white",
+             position = c("RIGHT", "BOTTOM"))
+
+# create facet type plot
+# current.mode <- tmap_mode("plot")
+# tmap_arrange(nyc_spgwr_basemap, nyc_gwmodels_basemap, nyc_grf_basemap)
+# tmap_mode(current.mode)
+
+nyc_spgwr_basemap
+nyc_gwmodels_basemap
+
+# save maps
+tmap_save(nyc_spgwr_basemap,
+          filename = "./images/tmap_spgwr_basemap.png")
+
+tmap_save(nyc_gwmodels_basemap,
+          filename = "./images/tmap_gwmodels_basemap.png")
+```
+
+Let's compare all 3 local model outputs visually
 
 ```{r}
-data(meuse)
-coordinates(meuse) <- c("x", "y")
-meuse$ffreq <- factor(meuse$ffreq)
-data(meuse.grid)
-coordinates(meuse.grid) <- c("x", "y")
-meuse.grid$ffreq <- factor(meuse.grid$ffreq)
-gridded(meuse.grid) <- TRUE
-xx <- gwr(cadmium ~ dist, meuse, bandwidth = 228, hatmatrix=TRUE)
-xx
-x <- gwr(cadmium ~ dist, meuse, bandwidth = 228, fit.points = meuse.grid,
-predict=TRUE, se.fit=TRUE, fittedGWRobject=xx)
-x
-spplot(x$SDF, "pred")
-spplot(x$SDF, "pred.se")
+names(nyc_census_data_prepped_sp)
 ```
 
-```{r}
-data(oldcol, package="spdep")
-lw <- spdep::nb2listw(COL.nb)
-COL.lag.eig <- lagsarlm(CRIME ~ INC + HOVAL, data=COL.OLD, lw)
-COL.mix.eig <- lagsarlm(CRIME ~ INC + HOVAL, data=COL.OLD, lw,
-type="mixed")
-print(p1 <- predict(COL.mix.eig))
-print(p2 <- predict(COL.mix.eig, newdata=COL.OLD, listw=lw, pred.type = "TS",
-legacy.mixed = TRUE))
 
-?predict()
-?data(oldcol)
+```{r compare-local-r2-models}
+# add grf to sp object
+nyc_census_data_prepped_sp$grf <- grf_model$LGofFit$LM_Rsq100
 
-?columbus
-columbus <- st_read(system.file("shapes/columbus.shp", package="spData")[1], quiet=TRUE)
-
-columbus
+# plot all 3 gwr models local r2
+# png("images/local_r2_models.png", width = 1000, height = 800)
+spplot(nyc_census_data_prepped_sp, 
+       c("spgwr", "gwmodel", "grf"),
+       cex = 0.7,
+       layout = c(3,1),
+      par.strip.text=list(cex=1, lines=1, col="black"),
+      main = list("Local r2 of GWR based models", cex = 2),
+         par.settings=list(strip.background=list(col="transparent"),
+                             strip.border = list(col = 'grey95',lwd=0.5),
+                             axis.line=list(col="grey95",lwd=0.5)),
+         col="transparent",
+         colorkey=list(space="right",height=1, width=2,labels=list(cex=1.25)),
+         col.regions=viridis::viridis(100))
+# dev.off()
 ```
 
-Rspat California dataset
-
-```{r rspat-dataset}
-rspat::
-
-```
-
+We can visually see the local r2 values are highest in the GWModels GWR, which is also reflected in it's global score of .726. You can see it performs best in most of Staten Island, and parts of Eastern Queens and Bronx. The geographically weighted random forest (grf) performs the worst, with scores in the negative. This could mean optimal bandwidth needs to be calculated for grf, as it was too computationally expense to perform a full run. Therefore, the bandwidth selection was selected by inputted randomly. 
 
 
