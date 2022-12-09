@@ -709,8 +709,8 @@ Get model objects
 names(gw_model)
 ```
 
-```{r}
-gw_model$GW.arguments$
+```{r global-r2}
+gw_model$GW.diagnostic$gw.R2
 ```
 
 
@@ -740,7 +740,7 @@ Functions for use with `spgwr` package
 
 ```{r spgwr-functions}
 # finds bandwidth
-?spgwr::ggwr.sel()
+?spgwr::gwr.sel
 # basic gwr model
 ?spgwr::gwr()
 # predict?
@@ -752,30 +752,31 @@ Functions for use with `spgwr` package
 If we pass data as sp object no need to pass coords arg.
 
 ```{r bandwidth-spgwr-gwr}
-bwG <- spgwr::gwr.sel(formula = formula, 
+bw2 <- spgwr::gwr.sel(formula = formula, 
                data = nyc_census_data_prepped_sp,
                adapt = TRUE,
                gweight = gwr.bisquare,
                method = "cv",
                verbose = TRUE)
-bwG
+bw2
 ```
 
 ## Fit GWR model
 
 ```{r fit-gwr-model}
-gwrG <- spgwr::gwr(formula = formula, 
+spgwr_model <- spgwr::gwr(formula = formula, 
             data = nyc_census_data_prepped_sp,
-            adapt = bwG,
+            adapt = bw2,
             gweight = gwr.bisquare, 
             hatmatrix = TRUE)
-gwrG
+
+spgwr_model
 ```
 
-```{r global-r-squared-spgwr}
-?spgwr::gwr()
+Compute <a href="https://stackoverflow.com/questions/43927662/return-the-global-r2-of-a-geographically-weighted-regression-gwr-in-r">Quasi-global R2</a>
 
-gwrG$
+```{r global-r-sqaured}
+(1 - (spgwr_model$results$rss/spgwr_model$gTSS))
 ```
 
 
@@ -786,7 +787,7 @@ Let's view Local R2 values for GWR models.
 nyc_census_data_prepped_sp$gwmodel <- gw_model$SDF$Local_R2
 
 # spgwr add to sp object
-nyc_census_data_prepped_sp$spgwr <- gwrG$SDF$localR2
+nyc_census_data_prepped_sp$spgwr <- spgwr_model$SDF$localR2
 
 # load api key from .env
 mapbox_api <- mb_access_token(Sys.getenv("MAPBOX_API"),
