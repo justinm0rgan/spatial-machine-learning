@@ -572,14 +572,15 @@ bwgrf <- SpatialML::grf.bw(formula = formula_grf,
                   dataset = nyc_census_grf_prepped,
                   kernel = "adaptive",
                   coords = coords,
-                  bw.min = NULL,
-                  bw.max = NULL,
+                  bw.min = 98,
+                  bw.max = 236,
                   step = 1,
                   trees = 500,
                   mtry = NULL,
                   importance = "impurity",
                   forests = FALSE,
-                  weighted = TRUE)
+                  weighted = TRUE,
+                  verbose = TRUE)
 ```
 
 Run GRF Model.
@@ -811,7 +812,7 @@ nyc_spgwr <- tm_shape(nyc_census_data_prepped_sp) +
   tm_layout(main.title = "GWR (spgwr) Local r2 Output")
 
 # gwmodels
-nyc_gw_models <- tm_shape(nyc_census_data_prepped_sp) +
+nyc_gw_model <- tm_shape(nyc_census_data_prepped_sp) +
   tm_fill("gwmodel", 
           palette = "GnBu", 
           title = "Local r2") +
@@ -820,7 +821,7 @@ nyc_gw_models <- tm_shape(nyc_census_data_prepped_sp) +
 # visulaize gwmodels with basemap
 nyc_gwmodels_basemap <- tm_shape(nyc_tiles) +
   tm_rgb() +
-  nyc_gw_models +
+  nyc_gw_model +
   tm_scale_bar(position = c(0.01, 0),
                just = "left") + 
   tm_compass(position = c("right", "top")) + 
@@ -845,22 +846,17 @@ nyc_spgwr_basemap <- tm_shape(nyc_tiles) +
 # tmap_mode(current.mode)
 
 nyc_spgwr_basemap
-nyc_gwmodels_basemap
+nyc_gwmodel_basemap
 
 # save maps
 tmap_save(nyc_spgwr_basemap,
           filename = "./images/tmap_spgwr_basemap.png")
 
-tmap_save(nyc_gwmodels_basemap,
+tmap_save(nyc_gwmodel_basemap,
           filename = "./images/tmap_gwmodels_basemap.png")
 ```
 
 Let's compare all 3 local model outputs visually
-
-```{r}
-names(nyc_census_data_prepped_sp)
-```
-
 
 ```{r compare-local-r2-models}
 # add grf to sp object
