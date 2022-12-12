@@ -551,9 +551,10 @@ coords <- nyc_census_data_prepped %>%
 Prep dataset for modeling
 
 ```{r prep-grf}
-# drop residuals
+# drop residuals and create sqrt(median_value) col
 nyc_census_grf_prepped <- nyc_census_data_prepped %>% 
-  st_drop_geometry() %>% 
+  st_drop_geometry() %>%
+  mutate(sqrt_med_value = sqrt(median_value)) %>% 
   select(!c(GEOID, NAM, residuals, lagged_residuals, lat, lon))
 ```
 
@@ -561,13 +562,15 @@ Define formula
 
 ```{r formula}
 # define formula for grf
-formula_grf <- "median_value ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
+formula_grf <- "sqrt_med_value ~ median_rooms + median_income + pct_college + pct_foreign_born + pct_white + pct_black + pct_hispanic + pct_asian + median_age + percent_ooh + median_structure_age + pop_density"
 ```
 
-Find optimal bandwidth
+Find optimal bandwidth for grf
 
 ```{r optimal-bandwidth-grf, eval=FALSE}
-# this takes way too long, will set bw to gwr setting
+# this takes way too long, set eval=F so as to not rerun
+# start timer
+ptm <- proc.time()
 bwgrf <- SpatialML::grf.bw(formula = formula_grf,
                   dataset = nyc_census_grf_prepped,
                   kernel = "adaptive",
@@ -581,7 +584,39 @@ bwgrf <- SpatialML::grf.bw(formula = formula_grf,
                   forests = FALSE,
                   weighted = TRUE,
                   verbose = TRUE)
+# stop the clock
+tot_time <- proc.time() - ptm
+
+# view results
+bwgrf
+(tot_time/60)/60
 ```
+
+View bandwidth selection
+
+```{r view-bandwidth-selection-grf}
+# create df from list
+bwgrfdf <- bwgrf %>% 
+  as.data.frame(col.names =c("","BestBW")) 
+
+# get max score
+highlight_df <- bwgrfdf %>%
+  filter(Local == max(Local))
+
+# visualize
+(ggplot_bw_grf <- bwgrfdf %>% 
+  ggplot(aes(Bandwidth,Local)) +
+  geom_line() +
+  geom_point(data = highlight_df, aes(Bandwidth, Local),
+             color = "Red", size = 4, pch = 8) +
+  labs(y = "Local R2", title = "GRF Optimal Bandwidth Selection",
+       subtitle = "(Impurity)"))
+  
+# save plot
+ggsave(filename = "./images/ggplot_bw_grf.png",
+       plot = ggplot_bw_grf)
+```
+
 
 Run GRF Model.
 
@@ -589,7 +624,7 @@ Run GRF Model.
 # model
 grf_model <- grf(formula = formula_grf,
     dframe = nyc_census_grf_prepped,
-    bw = 98,
+    bw = bwgrf$Best.BW,
     ntree = 500,
     mtry = 2,
     kernel = "adaptive",
@@ -625,6 +660,7 @@ Plot with base map
 mapbox_api <- mb_access_token(Sys.getenv("MAPBOX_API"),
                               install = T,
                               overwrite = T)
+
 #set tiles
 nyc_tiles <- 
   get_static_tiles(
@@ -639,7 +675,8 @@ nyc_tiles <-
 nyc_grf <- tm_shape(nyc_census_data_prepped) +
   tm_fill("localr2", 
           palette = "OrRd", 
-          title = "Local r2") +
+          title = "Local r2",
+          alpha = 0.8) +
   tm_layout(main.title = "GRF (SpatialML) Local r2 Output")
 
 # gtrf with basemap
@@ -657,6 +694,7 @@ nyc_grf_basemap <- tm_shape(nyc_tiles) +
 tmap_save(nyc_grf_basemap,
           filename = "./images/tmap_grf_basemap.png")
 
+nyc_grf_basemap
 ```
 
 ## Geographically Weighted Regression (GWR) from GWmodels Package
@@ -785,7 +823,7 @@ Let's view Local R2 values for GWR models.
 
 ```{r mapview-local-r2}
 # gwmodel add to sp object
-nyc_census_data_prepped_sp$gwmodel <- gw_model$SDF$Local_R2
+nyc_census_data_prepped_sp$GWmodel <- gw_model$SDF$Local_R2
 
 # spgwr add to sp object
 nyc_census_data_prepped_sp$spgwr <- spgwr_model$SDF$localR2
@@ -808,18 +846,20 @@ nyc_tiles <-
 nyc_spgwr <- tm_shape(nyc_census_data_prepped_sp) +
   tm_fill("spgwr", 
           palette = "RdPu", 
-          title = "Local r2") +
+          title = "Local r2",
+          alpha = 0.8) +
   tm_layout(main.title = "GWR (spgwr) Local r2 Output")
 
 # gwmodels
 nyc_gw_model <- tm_shape(nyc_census_data_prepped_sp) +
-  tm_fill("gwmodel", 
+  tm_fill("GWmodel", 
           palette = "GnBu", 
-          title = "Local r2") +
+          title = "Local r2",
+          alpha = 0.8) +
   tm_layout(main.title = "GWR (GWModel) Local r2 Output")
 
 # visulaize gwmodels with basemap
-nyc_gwmodels_basemap <- tm_shape(nyc_tiles) +
+nyc_gwmodel_basemap <- tm_shape(nyc_tiles) +
   tm_rgb() +
   nyc_gw_model +
   tm_scale_bar(position = c(0.01, 0),
@@ -854,31 +894,42 @@ tmap_save(nyc_spgwr_basemap,
 
 tmap_save(nyc_gwmodel_basemap,
           filename = "./images/tmap_gwmodels_basemap.png")
+
 ```
 
 Let's compare all 3 local model outputs visually
 
-```{r compare-local-r2-models}
+```{r convert-to-long-ggplot}
 # add grf to sp object
 nyc_census_data_prepped_sp$grf <- grf_model$LGofFit$LM_Rsq100
 
-# plot all 3 gwr models local r2
-# png("images/local_r2_models.png", width = 1000, height = 800)
-spplot(nyc_census_data_prepped_sp, 
-       c("spgwr", "gwmodel", "grf"),
-       cex = 0.7,
-       layout = c(3,1),
-      par.strip.text=list(cex=1, lines=1, col="black"),
-      main = list("Local r2 of GWR based models", cex = 2),
-         par.settings=list(strip.background=list(col="transparent"),
-                             strip.border = list(col = 'grey95',lwd=0.5),
-                             axis.line=list(col="grey95",lwd=0.5)),
-         col="transparent",
-         colorkey=list(space="right",height=1, width=2,labels=list(cex=1.25)),
-         col.regions=viridis::viridis(100))
-# dev.off()
+# pivot then plot
+(ggplot_comp_loc_r2 <- nyc_census_data_prepped_sp %>% 
+  st_as_sf() %>% 
+  pivot_longer(cols = c("spgwr", "GWmodel", "grf")) %>% 
+  ggplot(aes(fill = value)) +
+    geom_sf(color = NA) +
+    scale_fill_viridis_c() +
+    ggthemes::theme_map(base_size = 8) +
+    facet_wrap(~name) +
+    labs(title = "Local R2 of Geographically Weighted Models",
+         fill = "R2") +
+    theme(plot.title.position = 'plot',
+          plot.title = element_text(hjust = 0.5,
+                                    vjust = 3,
+                                    size = 20),
+          legend.position = c(0.20,-0.28),
+          legend.key.height = unit(0.85, 'cm'),
+          legend.key.width = unit(2, "cm"),
+          legend.direction = "horizontal",
+          legend.text = element_text(size=10),
+          legend.title = element_text(size = 10),
+          strip.text = element_text(size = 10)))
+
+# save
+ggsave(filename = "./images/ggplot_comp_loc_r2.png",
+       plot = ggplot_comp_loc_r2)
 ```
 
-We can visually see the local r2 values are highest in the GWModels GWR, which is also reflected in it's global score of .726. You can see it performs best in most of Staten Island, and parts of Eastern Queens and Bronx. The geographically weighted random forest (grf) performs the worst, with scores in the negative. This could mean optimal bandwidth needs to be calculated for grf, as it was too computationally expense to perform a full run. Therefore, the bandwidth selection was selected by inputted randomly. 
-
+We can visually see the local r2 values are highest in the GWModels GWR, which is also reflected in it's global score of .726. You can see it performs best in most of Staten Island, and parts of Eastern Queens and Bronx. The geographically weighted random forest (grf) performs the worst, with scores in the negative. However, the real test would be to download this census data the year prior and the year after, this way we could have a train/test and validation set. My suspiscion is the GWR models are overfit, and the GRF may predict the best. 
 
